@@ -63,6 +63,23 @@ const RUNTIME_LOCATION_FILE = 'runtime-location.json';
 const RUNTIME_PREFERENCES_FILE = 'runtime-preferences.json';
 const RUNTIME_REGIONS = new Set<RuntimeRegion>(['auto', 'global', 'china', 'russia', 'restricted']);
 
+function intelXpuRequested(): boolean {
+  if (process.env.OMNIVOICE_GPU_TARGET === 'intel' || process.env.OMNIVOICE_DEVICE === 'xpu')
+    return true;
+  const path = process.env.OMNIVOICE_ENV_FILE || join(homedir(), '.config', 'omnivoice', 'env');
+  try {
+    return readFileSync(path, 'utf8')
+      .split(/\r?\n/)
+      .some(
+        (line) =>
+          /^(?:export\s+)?OMNIVOICE_GPU_TARGET=intel\s*$/.test(line.trim()) ||
+          /^(?:export\s+)?OMNIVOICE_DEVICE=xpu\s*$/.test(line.trim()),
+      );
+  } catch {
+    return false;
+  }
+}
+
 /** Pipe closures emitted while a child is exiting are lifecycle signals, not failures. */
 export function isExpectedPipeClose(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
@@ -554,6 +571,9 @@ export class BackendSupervisor extends EventEmitter<{
       this.runtimeProject ?? join(storedRuntimeRoot() ?? defaultRuntimeRoot(), 'project');
     this.runtimeProject = project;
     const controller = new AbortController();
+    const gpuTarget = intelXpuRequested() ? 'intel' : null;
+    const checkRuntimeDependencies = (root: string) =>
+      gpuTarget === 'intel' ? runtimeDependenciesReady(root, true) : runtimeDependenciesReady(root);
     this.installation = controller;
     const gen = ++this.generation;
     this.startedAt = Date.now();
@@ -567,7 +587,7 @@ export class BackendSupervisor extends EventEmitter<{
       const reusable =
         ((await runtimeReady(backendRoot(), project)) ||
           (await runtimeCompatible(backendRoot(), project))) &&
-        (await runtimeDependenciesReady(project));
+        (await checkRuntimeDependencies(project));
       if (gen !== this.generation || controller.signal.aborted) return;
       if (reusable) {
         await this.start();
@@ -596,7 +616,7 @@ export class BackendSupervisor extends EventEmitter<{
         const fallbackReusable =
           ((await runtimeReady(backendRoot(), project)) ||
             (await runtimeCompatible(backendRoot(), project))) &&
-          (await runtimeDependenciesReady(project));
+          (await checkRuntimeDependencies(project));
         if (gen !== this.generation || controller.signal.aborted) return;
         if (fallbackReusable) {
           await this.start();
@@ -651,6 +671,7 @@ export class BackendSupervisor extends EventEmitter<{
           this.emitStatus();
         },
         this.runtimeRegion,
+        gpuTarget,
       );
       if (gen === this.generation) await this.start();
     } catch (error) {
@@ -865,9 +886,15 @@ export class BackendSupervisor extends EventEmitter<{
       configured ? [configured] : [this.runtimeProject, own, ...legacyTauriRuntimeProjects()]
     ).filter((candidate): candidate is string => Boolean(candidate));
     for (const project of new Set(candidates.map((candidate) => resolve(candidate)))) {
+      const metadataReady =
+        (await runtimeReady(bundle, project)) || (await runtimeCompatible(bundle, project));
+      const dependenciesReady = metadataReady
+        ? intelXpuRequested()
+          ? await runtimeDependenciesReady(project, true)
+          : await runtimeDependenciesReady(project)
+        : false;
       if (
-        ((await runtimeReady(bundle, project)) || (await runtimeCompatible(bundle, project))) &&
-        (await runtimeDependenciesReady(project))
+        dependenciesReady
       ) {
         this.runtimeProject = project;
         if (project !== own && project !== configured)

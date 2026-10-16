@@ -8,6 +8,8 @@ import {
   installRuntime,
   promoteLegacyRuntimeCaches,
   CUDNN8_COMPAT_PIN,
+  XPU_TORCH_INDEX_URL,
+  XPU_TORCH_PACKAGES,
   clearCtranslate2ExecutableStack,
   runtimePython,
   runtimeReady,
@@ -181,6 +183,41 @@ describe('packaged runtime setup', () => {
       ([, args]) => args[0] === '-c' && args[1]?.includes('import fastapi'),
     );
     expect(verify?.[1][1]).toContain('sentencepiece');
+  });
+  it('installs and verifies pinned Intel XPU wheels after frozen dependency sync', async () => {
+    const { bundle, project } = await fixture();
+    const run = vi.fn(
+      async (
+        _command: string,
+        _args: string[],
+        _cwd: string,
+        _env?: NodeJS.ProcessEnv,
+      ) => {
+      await interpreter(project);
+      },
+    );
+    await installRuntime(
+      bundle,
+      project,
+      'uv',
+      run,
+      new AbortController().signal,
+      undefined,
+      'global',
+      'intel',
+    );
+    const syncIndex = run.mock.calls.findIndex(([, args]) => args[0] === 'sync');
+    const xpuIndex = run.mock.calls.findIndex(([, args]) => args.includes(XPU_TORCH_INDEX_URL));
+    expect(syncIndex).toBeGreaterThanOrEqual(0);
+    expect(xpuIndex).toBeGreaterThan(syncIndex);
+    expect(run.mock.calls[xpuIndex]?.[1]).toEqual(
+      expect.arrayContaining(['--reinstall', ...XPU_TORCH_PACKAGES]),
+    );
+    expect(
+      run.mock.calls.some(
+        ([, args]) => args[0] === '-c' && args[1]?.includes('assert torch.xpu.is_available()'),
+      ),
+    ).toBe(true);
   });
   it('does not mark a runtime ready if the native tokenizer crashes during verification', async () => {
     const { bundle, project } = await fixture();

@@ -15,6 +15,7 @@ VoiceStudio Electron installer (macOS / Linux)
   --version VERSION  Install a published Electron version (optional v prefix)
   --main, --source   Clone main, build Electron, and install the desktop app
   --binary          Install a release (default)
+    --gpu intel       Install with Intel XPU selection (Linux only)
   --uninstall       Remove the installed app, preserving all user data
   --help            Show this help
 
@@ -27,8 +28,10 @@ HELP
 
 MODE=binary
 VERSION=
+GPU_TARGET=${OMNIVOICE_GPU_TARGET:-}
 UNINSTALL=0
 INSTALL_OPTION=0
+[ -z "$GPU_TARGET" ] || INSTALL_OPTION=1
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --main|--source) MODE=main; INSTALL_OPTION=1 ;;
@@ -38,6 +41,10 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || die '--version requires a value'
             VERSION=${2#v}; INSTALL_OPTION=1; shift ;;
         --help|-h) usage; exit 0 ;;
+        --gpu)
+            [ "$#" -ge 2 ] || die '--gpu requires a target (e.g., intel)'
+            [ -n "$2" ] || die '--gpu requires a target (e.g., intel)'
+            GPU_TARGET=$2; INSTALL_OPTION=1; shift ;;
         *) die "Unknown option: $1 (see --help)" ;;
     esac
     shift
@@ -54,6 +61,8 @@ case "$(uname -s)" in
     Linux) OS=linux ;;
     *) die 'This shell installer supports macOS and Linux. On Windows, use the Electron .exe from GitHub Releases.' ;;
 esac
+[ -z "$GPU_TARGET" ] || [ "$GPU_TARGET" = intel ] || die 'Unsupported GPU target; currently only intel is supported.'
+[ "$GPU_TARGET" != intel ] || [ "$OS" = linux ] || die '--gpu intel is supported on Linux only.'
 if [ "$OS" = mac ]; then
     PATH="$PATH:/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support"
     export PATH
@@ -134,7 +143,50 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
-download() { curl --proto '=https' --proto-redir '=https' --connect-timeout 30 --max-time 1800 -fLsS --retry 3 "$1" -o "$2"; }
+download() { curl --proto '=https' --proto-redir '=https' --connect-timeout 30 --max-time 1800 -fL --progress-bar --retry 3 "$1" -o "$2"; }
+
+install_intel_gpu_runtime() {
+    [ "$GPU_TARGET" = intel ] || return 0
+    [ "$OS" = linux ] || die '--gpu intel is supported on Linux only.'
+    [ -r /etc/os-release ] || die 'Cannot identify this Linux distribution.'
+    . /etc/os-release
+    case "${ID:-}:${VERSION_ID:-}" in
+        ubuntu:24.04|ubuntu:26.04)
+            have sudo || die 'Intel Arc setup requires sudo and apt-get.'
+            have apt-get || die 'Intel Arc setup requires sudo and apt-get.'
+            sudo apt-get update
+            sudo apt-get install -y software-properties-common
+            sudo add-apt-repository -y ppa:kobuk-team/intel-graphics
+            sudo apt-get update
+            sudo apt-get install -y libze-intel-gpu1 libze1 intel-metrics-discovery intel-opencl-icd clinfo intel-gsc
+            ;;
+        debian:*)
+            if ! have ldconfig || ! ldconfig -p 2>/dev/null | grep -q 'libze_loader\.so' || ! ldconfig -p 2>/dev/null | grep -q 'libze_intel_gpu\.so'; then
+                die 'Debian requires the Intel Level Zero loader and GPU driver; install them before using --gpu intel.'
+            fi
+            ;;
+        *)
+            die 'Intel Arc setup supports Ubuntu 24.04/26.04 with automatic drivers; other distributions need Level Zero installed manually.'
+            ;;
+    esac
+}
+
+persist_intel_gpu_choice() {
+    [ "$GPU_TARGET" = intel ] || return 0
+    env_file=${OMNIVOICE_ENV_FILE:-"$HOME/.config/omnivoice/env"}
+    env_dir=$(dirname "$env_file")
+    mkdir -p "$env_dir" || die 'Could not create the VoiceStudio environment directory.'
+    [ ! -L "$env_file" ] || die 'Refusing to replace a symlinked VoiceStudio environment file.'
+    [ ! -e "$env_file" ] || [ -f "$env_file" ] || die 'VoiceStudio environment path must be a regular file.'
+    temporary=$(mktemp "$env_dir/.voicestudio-env.XXXXXXXX")
+    if [ -f "$env_file" ]; then
+        awk '!/^(export[[:space:]]+)?(OMNIVOICE_DEVICE|OMNIVOICE_GPU_TARGET)=/' "$env_file" > "$temporary"
+    fi
+    printf 'OMNIVOICE_DEVICE=xpu\nOMNIVOICE_GPU_TARGET=intel\n' >> "$temporary"
+    chmod 600 "$temporary"
+    mv -f "$temporary" "$env_file" || die 'Could not save the Intel XPU selection.'
+    printf 'Intel XPU selected for the local backend.\n'
+}
 
 install_app() {
     require_closed
@@ -207,7 +259,7 @@ esac
 PACKAGE="$PACKAGE_DIR/$ASSET"
 if [ "$MODE" = binary ]; then
     BASE="$RELEASES/download/v$VERSION"
-    printf 'Downloading %s\n' "$ASSET"
+    printf 'Downloading %s from %s\n' "$ASSET" "$BASE/$ASSET"
     download "$BASE/$ASSET" "$PACKAGE" || die "No downloadable Electron package for v$VERSION ($OS/$ARCH). Check the release; legacy Tauri versions are not installed."
     download "$BASE/SHA256SUMS.txt" "$WORK/SHA256SUMS.txt" || die 'Published checksums are unavailable; refusing to install.'
     EXPECTED=$(awk -v asset="$ASSET" '$2 == asset {print $1}' "$WORK/SHA256SUMS.txt")
@@ -219,6 +271,7 @@ if [ "$MODE" = binary ]; then
     printf 'Checksum verified.\n'
 fi
 [ -f "$PACKAGE" ] || die "Expected Electron package not found: $PACKAGE"
+install_intel_gpu_runtime
 if [ "$OS" = mac ]; then
     MOUNT="$WORK/mount"
     mkdir "$MOUNT"
@@ -228,3 +281,4 @@ if [ "$OS" = mac ]; then
 else
     install_app "$PACKAGE"
 fi
+persist_intel_gpu_choice

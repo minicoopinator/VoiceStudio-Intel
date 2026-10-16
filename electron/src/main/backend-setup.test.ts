@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   runtimeConfig: null as { root: string; owned: boolean } | null,
   existingProject: false,
   existingRoot: false,
-  dependencies: vi.fn(async (_project?: string) => true),
+  dependencies: vi.fn(async (_project?: string, _requireIntelXpu?: boolean) => true),
   ready: vi.fn(async () => false),
   compatible: vi.fn(async () => false),
   interrupted: vi.fn(async () => false),
@@ -75,6 +75,10 @@ afterEach(() => {
   mocks.compatible.mockResolvedValue(false);
   mocks.interrupted.mockResolvedValue(false);
   mocks.promoteCaches.mockResolvedValue(undefined);
+});
+
+beforeEach(() => {
+  vi.stubEnv('OMNIVOICE_ENV_FILE', '/tmp/voicestudio-test-env');
 });
 
 it('resolves the packaged uv executable for each desktop platform', () => {
@@ -426,6 +430,31 @@ it.each(['ready', 'compatible'] as const)(
     await supervisor.shutdown();
   },
 );
+
+it('requires runtime setup when Intel XPU is pinned but the existing runtime lacks XPU', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => {
+      throw new Error('no backend');
+    }),
+  );
+  vi.stubEnv('OMNIVOICE_BACKEND_CMD', '');
+  vi.stubEnv('VOICESTUDIO_SKIP_BACKEND', '');
+  vi.stubEnv('OMNIVOICE_GPU_TARGET', 'intel');
+  mocks.ready.mockResolvedValue(true);
+  mocks.dependencies.mockImplementation(async (_project, requireIntelXpu) => !requireIntelXpu);
+  const supervisor = new BackendSupervisor();
+
+  await supervisor.start();
+
+  expect(supervisor.status.stage).toBe('setup_required');
+  expect(mocks.dependencies).toHaveBeenCalledWith(
+    join('/private/voicestudio', 'runtime', 'project'),
+    true,
+  );
+  expect(mocks.spawn).not.toHaveBeenCalled();
+  await supervisor.shutdown();
+});
 
 it.each([true, false])(
   'preserves a selected unowned runtime (project exists: %s)',

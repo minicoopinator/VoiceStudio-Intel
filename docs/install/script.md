@@ -27,6 +27,9 @@ curl -fsSL https://voicestudio.sh/install | sh -s -- --version X.Y.Z
 
 # Clone main, build a desktop package, then install it
 curl -fsSL https://voicestudio.sh/install | sh -s -- --main
+
+# Install with Intel Arc/XPU selected
+curl -fsSL https://voicestudio.sh/install | sh -s -- --gpu intel
 ```
 
 `--source` is an alias for `--main`. It cannot be combined with `--version`.
@@ -50,6 +53,16 @@ Launch Services registration so Launchpad can find the new version.
 macOS installs `VoiceStudio.app` in
 `/Applications`, or `~/Applications` if `/Applications` is not writable.
 Linux installs `~/.local/bin/VoiceStudio`; include `~/.local/bin` in your PATH.
+`--gpu intel` is Linux x64 only. On Ubuntu Desktop 24.04 and 26.04 it asks
+`sudo` to add Intel's `intel-graphics` PPA and install the compute runtime. On
+Debian, install an Intel Level Zero runtime yourself before using the flag;
+other distributions are not automated. The flag installs the matching Intel
+XPU PyTorch wheels during backend setup and pins compute to XPU. It does not
+install the full oneAPI developer toolkit. This changes system package sources
+only when explicitly requested and preserves other VoiceStudio environment
+settings. When upgrading an existing install, an older backend environment
+without XPU support triggers the app's local runtime setup; removing the app or
+user data is unnecessary.
 Current Electron source builds also read archived setup configuration for custom
 data/model folders and portable storage; explicit launch environment overrides
 still win. The backend retains its existing durable Settings precedence. No files

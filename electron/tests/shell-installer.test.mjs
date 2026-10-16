@@ -148,6 +148,7 @@ for (const [name, args, version] of [
     const r = f.run(args);
     assert.equal(r.status, 0, r.stderr);
     assert.equal(readFileSync(join(f.home, '.local/bin/VoiceStudio'), 'utf8'), payload);
+    assert.match(r.stdout, new RegExp(`Downloading VoiceStudio-Electron-${version.replaceAll('.', '\\.')}-linux-x64\\.AppImage from https://github\\.com/debpalash/VoiceStudio/releases/download/v${version.replaceAll('.', '\\.')}/`));
     assert.equal(readFileSync(f.settings, 'utf8'), 'preserve me');
     const requests = readFileSync(join(f.root, 'requests'), 'utf8');
     assert.match(requests, new RegExp(`download/v${version}/VoiceStudio-Electron-`));
@@ -185,9 +186,23 @@ test('build failure does not replace an existing installation', (t) => {
 });
 test('rejects invalid arguments before downloading', (t) => {
   const f = fixture(t);
-  for (const args of [['--version'], ['--version', '../bad'], ['--main', '--version', '1.2.3']]) {
+  for (const args of [
+    ['--version'],
+    ['--version', '../bad'],
+    ['--main', '--version', '1.2.3'],
+    ['--gpu'],
+    ['--gpu', ''],
+    ['--gpu', 'nvidia'],
+  ]) {
     assert.notEqual(f.run(args).status, 0);
   }
+  assert.equal(existsSync(join(f.root, 'requests')), false);
+});
+test('rejects Intel GPU setup on macOS before downloading', (t) => {
+  const f = fixture(t, { mac: true });
+  const result = f.run(['--gpu', 'intel']);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Linux only/);
   assert.equal(existsSync(join(f.root, 'requests')), false);
 });
 test('macOS installs the verified Electron bundle and replaces only the app', (t) => {

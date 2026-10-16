@@ -19,17 +19,11 @@
 # Usage: bash scripts/uv-sync-retry.sh [uv sync args...]
 set -uo pipefail
 
-# Check for hardware-specific dependencies
-if [ -n "$OMNIVOICE_GPU_TARGET" ] && [ "$OMNIVOICE_GPU_TARGET" = "intel" ]; then
-    echo "[+] Configuring Intel XPU dependencies for PyTorch..."
-    # Uninstall existing PyTorch packages
-    uv pip uninstall torch torchvision torchaudio 2>/dev/null || true
-
-    # Install PyTorch built with XPU support and the Intel Extension package
-    echo "Attempting to install XPU PyTorch and IPEX..."
-    uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/xpu
-    uv pip install intel-extension-for-pytorch
-fi
+GPU_TARGET="${OMNIVOICE_GPU_TARGET:-}"
+[ -z "$GPU_TARGET" ] || [ "$GPU_TARGET" = "intel" ] || {
+  echo "Unsupported GPU target: $GPU_TARGET (currently only intel is supported)" >&2
+  exit 2
+}
 
 # Three attempts, not more: uv does its OWN retrying underneath (the smoke
 # matrix sets UV_HTTP_RETRIES=5 with a 120 s timeout), so attempts here
@@ -41,6 +35,13 @@ BACKOFFS=(15 45)
 
 for attempt in $(seq 1 "$ATTEMPTS"); do
   if uv sync "$@"; then
+    if [ "$GPU_TARGET" = "intel" ]; then
+      echo "[+] Replacing locked CUDA PyTorch wheels with Intel XPU wheels..."
+      uv pip install --reinstall \
+        --python "${UV_PROJECT_ENVIRONMENT:-.venv}" \
+        --index-url https://download.pytorch.org/whl/xpu \
+        torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 || exit 1
+    fi
     [ "$attempt" -gt 1 ] && echo "uv sync succeeded on attempt $attempt"
     exit 0
   fi

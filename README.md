@@ -67,6 +67,9 @@ curl -fsSL https://voicestudio.sh/install | sh -s -- --version X.Y.Z
 # Build current main and install the desktop app
 curl -fsSL https://voicestudio.sh/install | sh -s -- --main
 
+# Install with Intel Arc/XPU selected (Ubuntu 24.04/26.04; see Linux notes)
+curl -fsSL https://voicestudio.sh/install | sh -s -- --gpu intel
+
 # Uninstall the app, keeping your data
 curl -fsSL https://voicestudio.sh/install | sh -s -- --uninstall
 ```

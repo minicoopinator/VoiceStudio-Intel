@@ -18,6 +18,8 @@ import { join } from 'node:path';
 const SOURCES = ['backend', 'omnivoice', 'pyproject.toml', 'uv.lock', 'README.md', 'LICENSE'];
 export const UV_VERSION = '0.12.13'; // Kept in sync with the Tauri tools contract.
 export const CUDNN8_COMPAT_PIN = 'nvidia-cudnn-cu12==8.9.7.29';
+export const XPU_TORCH_INDEX_URL = 'https://download.pytorch.org/whl/xpu';
+export const XPU_TORCH_PACKAGES = ['torch==2.8.0', 'torchvision==0.23.0', 'torchaudio==2.8.0'];
 const RUNTIME_SCHEMA = 'electron-runtime-v2-cudnn8';
 const CUDNN8_PROBE_PREFIX = 'VOICESTUDIO_CUDNN8_PROBE=';
 const REQUIRED_ENV_BYTES = 9 * 1024 ** 3; // Tauri setup.rs: REQUIRED_ENV_BYTES.
@@ -251,17 +253,23 @@ export async function runtimeInstallInterrupted(project: string): Promise<boolea
 }
 
 /** Check the selected interpreter locally before trusting runtime metadata. */
-export async function runtimeDependenciesReady(project: string): Promise<boolean> {
+export async function runtimeDependenciesReady(
+  project: string,
+  requireIntelXpu = false,
+): Promise<boolean> {
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.PYTHONHOME;
   delete env.PYTHONPATH;
   env.HF_HUB_OFFLINE = '1';
   env.TRANSFORMERS_OFFLINE = '1';
   env.PYTHONNOUSERSITE = '1';
+  const imports = requireIntelXpu
+    ? 'import fastapi, uvicorn, omnivoice, faster_whisper, sentencepiece, torch; assert torch.xpu.is_available()'
+    : 'import fastapi, uvicorn, omnivoice, faster_whisper, sentencepiece';
   return new Promise((resolve) => {
     execFile(
       runtimePython(project),
-      ['-c', 'import fastapi, uvicorn, omnivoice, faster_whisper, sentencepiece'],
+      ['-c', imports],
       {
         cwd: project,
         windowsHide: true,
@@ -360,6 +368,7 @@ export async function installRuntime(
   signal: AbortSignal,
   phase: (value: RuntimePhase) => void = () => {},
   region: RuntimeRegion = 'auto',
+  gpuTarget: 'intel' | null = null,
 ): Promise<void> {
   signal.throwIfAborted();
   phase('checking');
@@ -463,6 +472,31 @@ export async function installRuntime(
   }
   await run(uv, ['sync', '--frozen', '--no-dev', ...pythonArgs, ...repairArgs], project, env);
   signal.throwIfAborted();
+  if (gpuTarget === 'intel') {
+    await run(
+      uv,
+      [
+        'pip',
+        'install',
+        '--python',
+        runtimePython(project),
+        '--index-url',
+        XPU_TORCH_INDEX_URL,
+        '--reinstall',
+        ...XPU_TORCH_PACKAGES,
+      ],
+      project,
+      env,
+    );
+    signal.throwIfAborted();
+    await run(
+      runtimePython(project),
+      ['-c', 'import torch; assert torch.xpu.is_available(), "Intel XPU is not available"'],
+      project,
+      env,
+    );
+    signal.throwIfAborted();
+  }
   await ensureCudnn8Compat(uv, project, run, env, signal);
   signal.throwIfAborted();
   phase('verifying');
